@@ -1,9 +1,9 @@
 [
   {
     "proforma": "PROFORMA I",
-    "status": "VERIFIED",
-    "last_updated": "23/03/2026 08:38",
-    "updated_by": "teacher-verify",
+    "status": "PENDING",
+    "last_updated": "",
+    "updated_by": "",
     "sl_no": "1",
     "district": "Ganjam/Chikiti",
     "teacher_name": "Balakrishna Savara",
@@ -25,15 +25,7 @@
     "idt_ra": "",
     "date_joining_district": "",
     "remark": "Verified on 22/03/2026",
-    "change_history": [
-      {
-        "field": "remark",
-        "old": "Verified on 22/03/2026",
-        "new": "Updated in V5 test",
-        "time": "23/03/2026 08:38",
-        "by": "teacher"
-      }
-    ]
+    "change_history": []
   },
   {
     "proforma": "PROFORMA I",
