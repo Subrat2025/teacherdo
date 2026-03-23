@@ -1,0 +1,100 @@
+[
+  {
+    "time": "23/03/2026 17:16",
+    "action": "Admin login: Subrat"
+  },
+  {
+    "time": "23/03/2026 17:15",
+    "action": "Dataset refreshed from attached workbook",
+    "details": {
+      "source_file": "Chikiti_Teachers_20260323_0824.xlsx",
+      "teacher_count": 54,
+      "schools": 10,
+      "by_proforma": {
+        "PROFORMA I": 15,
+        "PROFORMA II": 20,
+        "PROFORMA III": 4,
+        "PROFORMA IV": 2,
+        "PROFORMA V": 4,
+        "PROFORMA VI": 6,
+        "PROFORMA VII": 2,
+        "PROFORMA VIII": 1
+      }
+    }
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Teacher verified: Balakrishna Savara",
+    "details": {
+      "proforma": "PROFORMA I"
+    }
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Teacher download PDF: Balakrishna Savara",
+    "details": {
+      "proforma": "PROFORMA I"
+    }
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Teacher download Excel: Balakrishna Savara",
+    "details": {
+      "proforma": "PROFORMA I"
+    }
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Teacher update: Balakrishna Savara",
+    "details": {
+      "proforma": "PROFORMA I",
+      "fields": [
+        "remark"
+      ]
+    }
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Teacher login: school=Barahi Bidyapitha Kalabada"
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Export: filter=all, status=all, rows=43"
+  },
+  {
+    "time": "23/03/2026 08:38",
+    "action": "Admin login: Subrat"
+  },
+  {
+    "time": "23/03/2026 06:59",
+    "action": "Admin deleted teacher: Bulk Import Teacher Two (PROFORMA VIII)"
+  },
+  {
+    "time": "23/03/2026 06:59",
+    "action": "Admin deleted teacher: Bulk Import Teacher One (PROFORMA VIII)"
+  },
+  {
+    "time": "23/03/2026 06:59",
+    "action": "Admin bulk import: proforma=PROFORMA VIII, created=0, updated=1, skipped=0"
+  },
+  {
+    "time": "23/03/2026 06:59",
+    "action": "Admin bulk import: proforma=PROFORMA VIII, created=2, updated=0, skipped=0"
+  },
+  {
+    "time": "23/03/2026 06:59",
+    "action": "Admin login: Subrat"
+  },
+  {
+    "time": "23/03/2026 06:47",
+    "action": "Admin deleted teacher: Proforma Eight Test Teacher (PROFORMA VIII)"
+  },
+  {
+    "time": "23/03/2026 06:47",
+    "action": "Admin created teacher: Proforma Eight Test Teacher (PROFORMA VIII) @ Barahi Bidyapitha Kalabada"
+  },
+  {
+    "time": "23/03/2026 06:47",
+    "action": "Admin login: Subrat"
+  }
+]
