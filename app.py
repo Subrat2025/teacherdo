@@ -5,17 +5,21 @@ New: Bulk Excel import into any proforma
 """
 from flask import (Flask, render_template_string, request, jsonify,
                    session, redirect, url_for, send_file)
-import json, os, datetime, io, re
+import json, os, datetime, io, re, shutil, tempfile
 from functools import wraps
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
 app = Flask(__name__)
-app.secret_key = "chikiti_block_2026_secure_key_xyz"
+app.secret_key = os.environ.get("APP_SECRET_KEY", "chikiti_block_2026_secure_key_xyz")
 
-ADMIN_USER = "Subrat"
-ADMIN_PASS = "Subrat@888"
+ADMIN_USER = os.environ.get("ADMIN_USER", "Subrat")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "Subrat@888")
 
 # ══ Embedded HTML Templates ══
 
@@ -23,7 +27,7 @@ HOME_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n
 
 TEACHER_LOGIN_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n<title>Teacher Login — Chikiti Block</title>\n<style>\n  :root{--navy:#0d2366;--steel:#1f4e79;--sky:#dce6f1;--green:#2e7d32;--amber:#f57f17;--red:#c62828}\n  *{box-sizing:border-box;margin:0;padding:0}\n  body{font-family:\'Segoe UI\',Arial,sans-serif;background:linear-gradient(135deg,#e8f0fe 0%,#c8deff 100%);min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}\n  .back-link{position:fixed;top:16px;left:16px;color:var(--navy);text-decoration:none;font-size:.9rem;font-weight:600;background:rgba(255,255,255,.85);padding:8px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1)}\n  .back-link:hover{background:var(--white)}\n  /* Card */\n  .card{background:#fff;border-radius:18px;box-shadow:0 8px 40px rgba(13,35,102,.15);padding:44px 40px 40px;max-width:480px;width:100%}\n  .logo{text-align:center;margin-bottom:28px}\n  .logo .icon{font-size:3.2rem;margin-bottom:8px}\n  .logo h1{font-size:1.5rem;color:var(--navy);font-weight:700}\n  .logo p{font-size:.85rem;color:#666;margin-top:4px}\n  /* Form */\n  .field{margin-bottom:20px}\n  label{display:block;font-size:.88rem;font-weight:600;color:var(--steel);margin-bottom:6px}\n  select,input[type=text],input[type=date]{\n    width:100%;padding:11px 14px;border:2px solid #d0daf0;border-radius:9px;\n    font-size:.95rem;color:#222;background:#fdfdff;transition:border-color .2s;outline:none}\n  select:focus,input:focus{border-color:var(--navy)}\n  .hint{font-size:.78rem;color:#888;margin-top:5px}\n  .btn-login{\n    width:100%;padding:14px;background:linear-gradient(135deg,var(--navy),var(--steel));\n    color:#fff;border:none;border-radius:10px;font-size:1rem;font-weight:700;\n    cursor:pointer;transition:opacity .2s;margin-top:8px}\n  .btn-login:hover{opacity:.9}\n  .btn-login:disabled{opacity:.6;cursor:not-allowed}\n  /* Error / info */\n  .alert{padding:12px 16px;border-radius:9px;font-size:.88rem;margin-bottom:16px;display:none}\n  .alert.error{background:#ffeaea;color:var(--red);border:1px solid #ffcdd2}\n  .alert.success{background:#e8f5e9;color:var(--green);border:1px solid #c8e6c9}\n  .alert.show{display:block}\n  /* Spinner */\n  .spinner{display:none;width:20px;height:20px;border:3px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin:auto}\n  @keyframes spin{to{transform:rotate(360deg)}}\n  /* Info box */\n  .info-box{background:#f0f4ff;border-left:4px solid var(--navy);border-radius:0 8px 8px 0;padding:12px 14px;margin-bottom:22px;font-size:.84rem;color:var(--navy);line-height:1.5}\n</style>\n</head>\n<body>\n\n<a class="back-link" href="/">← Home</a>\n\n<div class="card">\n  <div class="logo">\n    <div class="icon">👨\u200d🏫</div>\n    <h1>Teacher Login</h1>\n    <p>Chikiti Block, Ganjam District — 2026</p>\n  </div>\n\n  <div class="info-box">\n    🔐 Select your school and enter your date of birth (as recorded in the office). Your proforma data will be displayed for verification.\n  </div>\n\n  <div class="alert error" id="alertBox"></div>\n\n  <div class="field">\n    <label for="schoolSelect">🏫 Select Your School *</label>\n    <select id="schoolSelect">\n      <option value="">— Choose your school —</option>\n      {% for school in schools %}\n      <option value="{{ school }}">{{ school }}</option>\n      {% endfor %}\n    </select>\n  </div>\n\n  <div class="field">\n    <label for="dobInput">📅 Date of Birth *</label>\n    <input type="date" id="dobInput" placeholder="DD/MM/YYYY">\n    <div class="hint">Enter your date of birth as registered in the proforma.</div>\n  </div>\n\n  <button class="btn-login" id="loginBtn" onclick="doLogin()">\n    <span id="btnText">Login &amp; View My Data →</span>\n    <div class="spinner" id="spinner"></div>\n  </button>\n</div>\n\n<script>\nasync function doLogin(){\n  const school = document.getElementById(\'schoolSelect\').value.trim();\n  const dobRaw  = document.getElementById(\'dobInput\').value.trim();\n  const alert   = document.getElementById(\'alertBox\');\n  alert.className = \'alert\';\n\n  if(!school){ showErr(\'Please select your school.\'); return; }\n  if(!dobRaw){  showErr(\'Please enter your date of birth.\'); return; }\n\n  // Convert YYYY-MM-DD (from date input) → DD/MM/YYYY\n  const parts = dobRaw.split(\'-\');\n  const dob   = parts.length===3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : dobRaw;\n\n  setBusy(true);\n  try{\n    const res  = await fetch(\'/teacher/login\',{\n      method:\'POST\',\n      headers:{\'Content-Type\':\'application/json\'},\n      body: JSON.stringify({school, dob})\n    });\n    const data = await res.json();\n    if(data.success){\n      window.location.href = \'/teacher/dashboard\';\n    } else {\n      showErr(data.error || \'Login failed. Please check your details.\');\n    }\n  } catch(e){ showErr(\'Network error. Please try again.\'); }\n  finally{ setBusy(false); }\n}\n\nfunction showErr(msg){\n  const a = document.getElementById(\'alertBox\');\n  a.textContent = msg;\n  a.className = \'alert error show\';\n}\nfunction setBusy(on){\n  document.getElementById(\'loginBtn\').disabled = on;\n  document.getElementById(\'btnText\').style.display = on?\'none\':\'block\';\n  document.getElementById(\'spinner\').style.display = on?\'block\':\'none\';\n}\n\n// Allow Enter key\ndocument.addEventListener(\'keydown\', e=>{ if(e.key===\'Enter\') doLogin(); });\n</script>\n</body>\n</html>\n'
 
-TEACHER_DASHBOARD_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n<title>My Proforma Data — Teacher Dashboard</title>\n<style>\n  :root{--navy:#0d2366;--steel:#1f4e79;--sky:#dce6f1;--green:#2e7d32;--amber:#e65100;--red:#c62828;--grey:#f5f7fa}\n  *{box-sizing:border-box;margin:0;padding:0}\n  body{font-family:\'Segoe UI\',Arial,sans-serif;background:var(--grey);min-height:100vh}\n\n  /* ── Top bar ── */\n  .topbar{background:linear-gradient(135deg,var(--navy),var(--steel));color:#fff;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}\n  .topbar-left{display:flex;align-items:center;gap:12px}\n  .topbar-left .icon{font-size:1.8rem}\n  .topbar-left h1{font-size:1.1rem;font-weight:700}\n  .topbar-left p{font-size:.78rem;opacity:.8}\n  .topbar-right{display:flex;gap:10px;align-items:center}\n  .school-badge{background:rgba(255,255,255,.15);padding:7px 14px;border-radius:20px;font-size:.82rem}\n  .btn-logout{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.3);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.85rem;text-decoration:none;transition:background .2s}\n  .btn-logout:hover{background:rgba(255,255,255,.25)}\n\n  /* ── Container ── */\n  .container{max-width:1100px;margin:0 auto;padding:24px 18px 60px}\n\n  /* ── Progress bar ── */\n  .progress-wrap{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.07);padding:18px 22px;margin-bottom:22px}\n  .progress-label{font-size:.85rem;color:#555;margin-bottom:6px}\n  .progress-bar{height:9px;background:#e0e0e0;border-radius:5px;overflow:hidden}\n  .progress-fill{height:100%;background:linear-gradient(90deg,#2196f3,#0d2366);border-radius:5px;transition:width .6s}\n  .progress-stats{display:flex;gap:18px;margin-top:12px;flex-wrap:wrap}\n  .stat-item{font-size:.82rem;color:#555}\n  .stat-item strong{color:var(--navy)}\n\n  /* ── Teacher card ── */\n  .teacher-card{background:#fff;border-radius:14px;box-shadow:0 3px 18px rgba(0,0,0,.09);margin-bottom:28px;overflow:hidden}\n  .teacher-card-header{background:linear-gradient(135deg,var(--navy),var(--steel));color:#fff;padding:18px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}\n  .teacher-name{font-size:1.15rem;font-weight:700}\n  .teacher-meta{font-size:.82rem;opacity:.85;margin-top:3px}\n  .status-badge{padding:6px 16px;border-radius:20px;font-size:.82rem;font-weight:700;text-transform:uppercase}\n  .badge-PENDING{background:#fff3e0;color:#e65100;border:1.5px solid #ffcc02}\n  .badge-VERIFIED{background:#e8f5e9;color:#1b5e20;border:1.5px solid #66bb6a}\n  .badge-UPDATED{background:#e3f2fd;color:#0d47a1;border:1.5px solid #42a5f5}\n\n  /* ── Field groups ── */\n  .teacher-body{padding:22px 24px}\n  .field-group{margin-bottom:22px}\n  .group-title{font-size:.92rem;font-weight:700;color:var(--steel);margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid var(--sky);display:flex;align-items:center;gap:6px}\n  .fields-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}\n  .field-item{border:1.5px solid #e8edf5;border-radius:9px;padding:10px 13px;background:#fdfdff;transition:border-color .2s}\n  .field-item.changed{border-color:#1976d2;background:#f0f6ff}\n  .field-label{font-size:.75rem;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}\n  .field-value{font-size:.92rem;color:#222;word-break:break-word}\n  .field-input{width:100%;border:none;background:transparent;font-size:.92rem;color:#1a237e;outline:none;font-family:inherit;padding:0}\n  .field-input::placeholder{color:#bbb}\n\n  /* ── Action buttons ── */\n  .action-bar{padding:16px 24px 22px;background:#f8f9ff;border-top:1px solid #e8edf5;display:flex;gap:12px;flex-wrap:wrap;align-items:center}\n  .btn{padding:10px 22px;border-radius:9px;font-size:.9rem;font-weight:600;border:none;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:7px}\n  .btn-verify{background:linear-gradient(135deg,#2e7d32,#388e3c);color:#fff}\n  .btn-verify:hover{opacity:.9;transform:translateY(-1px)}\n  .btn-save{background:linear-gradient(135deg,#1565c0,#1976d2);color:#fff}\n  .btn-save:hover{opacity:.9;transform:translateY(-1px)}\n  .btn-edit{background:#fff;color:var(--navy);border:2px solid var(--navy)}\n  .btn-edit:hover{background:var(--sky)}\n  .btn-cancel{background:#fff;color:#666;border:2px solid #ddd}\n  .btn-cancel:hover{background:#f5f5f5}\n  .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}\n  .changes-count{font-size:.82rem;color:#1565c0;background:#e3f2fd;padding:5px 12px;border-radius:20px;margin-left:auto}\n\n  /* ── Success banner ── */\n  .success-banner{background:#e8f5e9;border:1.5px solid #81c784;color:#1b5e20;border-radius:10px;padding:13px 18px;margin-bottom:18px;display:flex;align-items:center;gap:10px;display:none}\n  .success-banner.show{display:flex}\n\n  /* ── Toast ── */\n  .toast{position:fixed;bottom:28px;right:28px;padding:14px 22px;border-radius:10px;color:#fff;font-size:.9rem;font-weight:600;z-index:9999;opacity:0;transform:translateY(20px);transition:all .35s;pointer-events:none;max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.2)}\n  .toast.show{opacity:1;transform:translateY(0)}\n  .toast.success{background:#2e7d32}\n  .toast.error{background:#c62828}\n  .toast.info{background:#0d2366}\n\n  /* ── Spinner ── */\n  .spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}\n  @keyframes spin{to{transform:rotate(360deg)}}\n\n  /* ── Loading overlay ── */\n  #loadingOverlay{position:fixed;inset:0;background:rgba(255,255,255,.85);display:flex;align-items:center;justify-content:center;z-index:9000;flex-direction:column;gap:14px}\n  #loadingOverlay .sp{width:44px;height:44px;border:5px solid #dce6f1;border-top-color:var(--navy);border-radius:50%;animation:spin 1s linear infinite}\n  #loadingOverlay p{color:var(--navy);font-weight:600}\n\n  /* ── Edit mode indicator ── */\n  .edit-mode-bar{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:10px 16px;border-radius:8px;font-size:.85rem;margin-bottom:14px;display:none;align-items:center;gap:8px}\n  .edit-mode-bar.show{display:flex}\n\n  @media(max-width:600px){\n    .topbar{flex-direction:column;align-items:flex-start}\n    .fields-grid{grid-template-columns:1fr}\n    .action-bar{justify-content:center}\n  }\n</style>\n</head>\n<body>\n\n<!-- Loading Overlay -->\n<div id="loadingOverlay">\n  <div class="sp"></div>\n  <p>Loading your proforma data…</p>\n</div>\n\n<!-- Top Bar -->\n<div class="topbar">\n  <div class="topbar-left">\n    <div class="icon">👨\u200d🏫</div>\n    <div>\n      <h1>My Proforma Data</h1>\n      <p>Chikiti Block Verification Portal · 2026</p>\n    </div>\n  </div>\n  <div class="topbar-right">\n    <div class="school-badge">🏫 {{ school }}</div>\n    <a href="/teacher/logout" class="btn-logout">🚪 Logout</a>\n  </div>\n</div>\n\n<!-- Main container -->\n<div class="container">\n\n  <!-- Progress bar -->\n  <div class="progress-wrap" id="progressWrap" style="display:none">\n    <div class="progress-label">Verification Progress</div>\n    <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>\n    <div class="progress-stats" id="progressStats"></div>\n  </div>\n\n  <!-- Teacher records inserted here -->\n  <div id="teacherRecords"></div>\n\n  <!-- No data message -->\n  <div id="noData" style="display:none;background:#fff;border-radius:14px;padding:40px;text-align:center;color:#999;font-size:1.1rem">\n    ⚠️ No records found. Please <a href="/teacher/logout">logout</a> and try again.\n  </div>\n\n</div>\n\n<!-- Toast -->\n<div class="toast" id="toast"></div>\n\n<script>\n/* ── State ── */\nlet allTeachers = [], fieldLabels = {}, fieldGroups = [];\nlet editModes = {}; // { "NAME||PROFORMA": bool }\n\n/* ── Boot ── */\nwindow.onload = async () => {\n  try {\n    const res  = await fetch(\'/api/teacher/mydata\');\n    const data = await res.json();\n    allTeachers = data.teachers || [];\n    fieldLabels = data.field_labels || {};\n    fieldGroups = data.field_groups || [];\n    renderAll();\n  } catch(e) {\n    document.getElementById(\'noData\').style.display = \'block\';\n  } finally {\n    document.getElementById(\'loadingOverlay\').style.display = \'none\';\n  }\n};\n\n/* ── Render all teachers ── */\nfunction renderAll(){\n  if(!allTeachers.length){ document.getElementById(\'noData\').style.display=\'block\'; return; }\n\n  // Progress\n  const total = allTeachers.length;\n  const done  = allTeachers.filter(t=>t.status===\'VERIFIED\'||t.status===\'UPDATED\').length;\n  if(total > 1){\n    document.getElementById(\'progressWrap\').style.display = \'block\';\n    document.getElementById(\'progressFill\').style.width = `${Math.round(done/total*100)}%`;\n    document.getElementById(\'progressStats\').innerHTML =\n      allTeachers.map(t=>`<div class="stat-item"><strong>${t.teacher_name}</strong>: \n        <span style="color:${statusColor(t.status)}">${t.status}</span></div>`).join(\'\');\n  }\n\n  const container = document.getElementById(\'teacherRecords\');\n  container.innerHTML = \'\';\n  allTeachers.forEach((t,i)=>{\n    container.insertAdjacentHTML(\'beforeend\', buildCard(t, i));\n  });\n}\n\nfunction statusColor(s){ return s===\'VERIFIED\'?\'#2e7d32\':s===\'UPDATED\'?\'#1565c0\':\'#e65100\'; }\n\n/* ── Build one teacher card ── */\nfunction buildCard(t, idx){\n  const key  = cardKey(t);\n  const isEdit = editModes[key] || false;\n  const pf   = t.proforma || \'\';\n  const ts   = t.last_updated ? ` · Last updated: ${t.last_updated}` : \'\';\n  const chCount = (t.change_history||[]).length;\n\n  let groupsHtml = \'\';\n  for(const grp of fieldGroups){\n    let fieldsHtml = \'\';\n    for(const fk of grp.fields){\n      if(fk===\'teacher_name\'||fk===\'sl_no\') continue;\n      const label = fieldLabels[fk] || fk;\n      const val   = t[fk] || \'\';\n      const isDate = fk.startsWith(\'date_\')||fk===\'dob\';\n      fieldsHtml += `\n        <div class="field-item" id="fi_${idx}_${fk}">\n          <div class="field-label">${label}</div>\n          ${isEdit ? `<input class="field-input" id="inp_${idx}_${fk}" \n            type="${isDate?\'text\':\'text\'}" value="${escHtml(val)}" \n            placeholder="${isDate?\'DD/MM/YYYY\':\'\'}"\n            oninput="markChanged(${idx},\'${fk}\')">` \n            : `<div class="field-value">${escHtml(val)||\'<span style="color:#bbb">—</span>\'}</div>`}\n        </div>`;\n    }\n    groupsHtml += `\n      <div class="field-group">\n        <div class="group-title">${grp.title}</div>\n        <div class="fields-grid">${fieldsHtml}</div>\n      </div>`;\n  }\n\n  // Determine action bar content based on status & edit mode\n  let actionHtml = \'\';\n  if(t.status === \'VERIFIED\'){\n    actionHtml = `<span style="color:#2e7d32;font-weight:600">✅ This record has been verified.</span>\n      <button class="btn btn-edit" onclick="setEdit(\'${key}\',${idx},true)">✏️ Edit &amp; Correct</button>`;\n  } else if(isEdit){\n    actionHtml = `\n      <button class="btn btn-save" id="saveBtn_${idx}" onclick="saveUpdates(${idx})" disabled>\n        💾 Save Changes\n      </button>\n      <button class="btn btn-verify" onclick="verifyRecord(${idx})">✅ Verify as Correct</button>\n      <button class="btn btn-cancel" onclick="setEdit(\'${key}\',${idx},false)">✖ Cancel</button>\n      <span class="changes-count" id="chgCount_${idx}" style="display:none">0 changes</span>`;\n  } else {\n    actionHtml = `\n      <button class="btn btn-verify" onclick="verifyRecord(${idx})">✅ All data is correct — Verify</button>\n      <button class="btn btn-edit" onclick="setEdit(\'${key}\',${idx},true)">✏️ Edit / Correct Data</button>`;\n  }\n\n  const changesBadge = chCount>0 ? `<span style="font-size:.78rem;background:rgba(255,255,255,.2);padding:3px 10px;border-radius:12px;margin-left:8px">${chCount} edit(s)</span>` : \'\';\n\n  return `\n    <div class="teacher-card" id="card_${idx}">\n      <div class="teacher-card-header">\n        <div>\n          <div class="teacher-name">👤 ${escHtml(t.teacher_name)} ${changesBadge}</div>\n          <div class="teacher-meta">${pf} &nbsp;·&nbsp; S.No. ${t.sl_no||\'—\'}${ts}</div>\n        </div>\n        <div class="status-badge badge-${t.status||\'PENDING\'}">${t.status||\'PENDING\'}</div>\n      </div>\n      ${isEdit?`<div class="edit-mode-bar show">✏️ Edit mode active — modify the fields below then click <strong>Save Changes</strong> or <strong>Verify</strong>.</div>`:\'\'}\n      <div class="teacher-body" id="body_${idx}">${groupsHtml}</div>\n      <div class="action-bar">${actionHtml}</div>\n    </div>`;\n}\n\nfunction cardKey(t){ return t.teacher_name+\'||\'+t.proforma; }\n\n/* ── Edit mode toggle ── */\nfunction setEdit(key, idx, on){\n  editModes[key] = on;\n  // Re-render card in place\n  const card   = document.getElementById(`card_${idx}`);\n  const t      = allTeachers[idx];\n  card.outerHTML = buildCard(t, idx);\n}\n\n/* ── Track changes ── */\nfunction markChanged(idx, fk){\n  const t   = allTeachers[idx];\n  const inp = document.getElementById(`inp_${idx}_${fk}`);\n  const fi  = document.getElementById(`fi_${idx}_${fk}`);\n  if(!inp||!fi) return;\n  const changed = inp.value.trim() !== (t[fk]||\'\').trim();\n  fi.classList.toggle(\'changed\', changed);\n  updateChangeCount(idx);\n}\n\nfunction updateChangeCount(idx){\n  const t  = allTeachers[idx];\n  let cnt  = 0;\n  for(const fk of Object.keys(fieldLabels)){\n    const inp = document.getElementById(`inp_${idx}_${fk}`);\n    if(inp && inp.value.trim() !== (t[fk]||\'\').trim()) cnt++;\n  }\n  const cc = document.getElementById(`chgCount_${idx}`);\n  const sb = document.getElementById(`saveBtn_${idx}`);\n  if(cc){ cc.textContent=`${cnt} change(s)`; cc.style.display=cnt?\'inline-block\':\'none\'; }\n  if(sb) sb.disabled = (cnt===0);\n}\n\n/* ── Collect edits ── */\nfunction collectEdits(idx){\n  const t = allTeachers[idx];\n  const updated = {};\n  for(const fk of Object.keys(fieldLabels)){\n    const inp = document.getElementById(`inp_${idx}_${fk}`);\n    if(inp && inp.value.trim() !== (t[fk]||\'\').trim()){\n      updated[fk] = inp.value.trim();\n    }\n  }\n  return updated;\n}\n\n/* ── Save updates ── */\nasync function saveUpdates(idx){\n  const t       = allTeachers[idx];\n  const fields  = collectEdits(idx);\n  if(!Object.keys(fields).length){ showToast(\'No changes to save.\',\'info\'); return; }\n\n  const sb = document.getElementById(`saveBtn_${idx}`);\n  if(sb){ sb.disabled=true; sb.innerHTML=\'<div class="spinner"></div> Saving…\'; }\n\n  try{\n    const res  = await fetch(\'/api/teacher/update\',{\n      method:\'POST\',\n      headers:{\'Content-Type\':\'application/json\'},\n      body: JSON.stringify({teacher_name:t.teacher_name, proforma:t.proforma, fields})\n    });\n    const data = await res.json();\n    if(data.success){\n      // Apply changes locally\n      Object.assign(t, fields);\n      t.status = \'UPDATED\';\n      t.last_updated = data.timestamp || \'\';\n      editModes[cardKey(t)] = false;\n      const card = document.getElementById(`card_${idx}`);\n      card.outerHTML = buildCard(t, idx);\n      showToast(\'✅ \'+data.message, \'success\');\n    } else {\n      showToast(\'❌ \'+(data.error||\'Update failed.\'), \'error\');\n      if(sb){ sb.disabled=false; sb.innerHTML=\'💾 Save Changes\'; }\n    }\n  } catch(e){\n    showToast(\'❌ Network error. Please retry.\', \'error\');\n    if(sb){ sb.disabled=false; sb.innerHTML=\'💾 Save Changes\'; }\n  }\n}\n\n/* ── Verify record ── */\nasync function verifyRecord(idx){\n  const t = allTeachers[idx];\n  // Collect any pending edits first\n  const fields = collectEdits(idx);\n  if(Object.keys(fields).length){\n    // Save edits then verify\n    await saveUpdates(idx);\n    // re-read allTeachers[idx] after update\n  }\n\n  const vbtn = document.querySelector(`#card_${idx} .btn-verify`);\n  if(vbtn){ vbtn.disabled=true; vbtn.innerHTML=\'<div class="spinner"></div> Verifying…\'; }\n\n  try{\n    const res  = await fetch(\'/api/teacher/verify\',{\n      method:\'POST\',\n      headers:{\'Content-Type\':\'application/json\'},\n      body: JSON.stringify({teacher_name:t.teacher_name, proforma:t.proforma})\n    });\n    const data = await res.json();\n    if(data.success){\n      t.status = \'VERIFIED\';\n      t.last_updated = data.timestamp || \'\';\n      editModes[cardKey(t)] = false;\n      const card = document.getElementById(`card_${idx}`);\n      card.outerHTML = buildCard(t, idx);\n      showToast(\'✅ \'+data.message, \'success\');\n    } else {\n      showToast(\'❌ \'+(data.error||\'Verification failed.\'), \'error\');\n    }\n  } catch(e){\n    showToast(\'❌ Network error. Please retry.\', \'error\');\n  }\n}\n\n/* ── Toast ── */\nlet toastTimer;\nfunction showToast(msg, type=\'success\'){\n  const el = document.getElementById(\'toast\');\n  el.textContent = msg;\n  el.className = `toast ${type} show`;\n  clearTimeout(toastTimer);\n  toastTimer = setTimeout(()=>{ el.className=\'toast\'; }, 4500);\n}\n\n/* ── Escape HTML ── */\nfunction escHtml(s){\n  if(s==null) return \'\';\n  return String(s).replace(/&/g,\'&amp;\').replace(/</g,\'&lt;\').replace(/>/g,\'&gt;\').replace(/"/g,\'&quot;\');\n}\n</script>\n</body>\n</html>\n'
+TEACHER_DASHBOARD_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n<title>My Proforma Data — Teacher Dashboard</title>\n<style>\n  :root{--navy:#0d2366;--steel:#1f4e79;--sky:#dce6f1;--green:#2e7d32;--amber:#e65100;--red:#c62828;--grey:#f5f7fa}\n  *{box-sizing:border-box;margin:0;padding:0}\n  body{font-family:\'Segoe UI\',Arial,sans-serif;background:var(--grey);min-height:100vh}\n\n  /* ── Top bar ── */\n  .topbar{background:linear-gradient(135deg,var(--navy),var(--steel));color:#fff;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}\n  .topbar-left{display:flex;align-items:center;gap:12px}\n  .topbar-left .icon{font-size:1.8rem}\n  .topbar-left h1{font-size:1.1rem;font-weight:700}\n  .topbar-left p{font-size:.78rem;opacity:.8}\n  .topbar-right{display:flex;gap:10px;align-items:center}\n  .school-badge{background:rgba(255,255,255,.15);padding:7px 14px;border-radius:20px;font-size:.82rem}\n  .btn-logout{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.3);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.85rem;text-decoration:none;transition:background .2s}\n  .btn-logout:hover{background:rgba(255,255,255,.25)}\n\n  /* ── Container ── */\n  .container{max-width:1100px;margin:0 auto;padding:24px 18px 60px}\n\n  /* ── Progress bar ── */\n  .progress-wrap{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.07);padding:18px 22px;margin-bottom:22px}\n  .progress-label{font-size:.85rem;color:#555;margin-bottom:6px}\n  .progress-bar{height:9px;background:#e0e0e0;border-radius:5px;overflow:hidden}\n  .progress-fill{height:100%;background:linear-gradient(90deg,#2196f3,#0d2366);border-radius:5px;transition:width .6s}\n  .progress-stats{display:flex;gap:18px;margin-top:12px;flex-wrap:wrap}\n  .stat-item{font-size:.82rem;color:#555}\n  .stat-item strong{color:var(--navy)}\n\n  /* ── Teacher card ── */\n  .teacher-card{background:#fff;border-radius:14px;box-shadow:0 3px 18px rgba(0,0,0,.09);margin-bottom:28px;overflow:hidden}\n  .teacher-card-header{background:linear-gradient(135deg,var(--navy),var(--steel));color:#fff;padding:18px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}\n  .teacher-name{font-size:1.15rem;font-weight:700}\n  .teacher-meta{font-size:.82rem;opacity:.85;margin-top:3px}\n  .status-badge{padding:6px 16px;border-radius:20px;font-size:.82rem;font-weight:700;text-transform:uppercase}\n  .badge-PENDING{background:#fff3e0;color:#e65100;border:1.5px solid #ffcc02}\n  .badge-VERIFIED{background:#e8f5e9;color:#1b5e20;border:1.5px solid #66bb6a}\n  .badge-UPDATED{background:#e3f2fd;color:#0d47a1;border:1.5px solid #42a5f5}\n\n  /* ── Field groups ── */\n  .teacher-body{padding:22px 24px}\n  .field-group{margin-bottom:22px}\n  .group-title{font-size:.92rem;font-weight:700;color:var(--steel);margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid var(--sky);display:flex;align-items:center;gap:6px}\n  .fields-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}\n  .field-item{border:1.5px solid #e8edf5;border-radius:9px;padding:10px 13px;background:#fdfdff;transition:border-color .2s}\n  .field-item.changed{border-color:#1976d2;background:#f0f6ff}\n  .field-label{font-size:.75rem;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}\n  .field-value{font-size:.92rem;color:#222;word-break:break-word}\n  .field-input{width:100%;border:none;background:transparent;font-size:.92rem;color:#1a237e;outline:none;font-family:inherit;padding:0}\n  .field-input::placeholder{color:#bbb}\n\n  /* ── Action buttons ── */\n  .action-bar{padding:16px 24px 22px;background:#f8f9ff;border-top:1px solid #e8edf5;display:flex;gap:12px;flex-wrap:wrap;align-items:center}\n  .btn{padding:10px 22px;border-radius:9px;font-size:.9rem;font-weight:600;border:none;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:7px}\n  .btn-verify{background:linear-gradient(135deg,#2e7d32,#388e3c);color:#fff}\n  .btn-verify:hover{opacity:.9;transform:translateY(-1px)}\n  .btn-save{background:linear-gradient(135deg,#1565c0,#1976d2);color:#fff}\n  .btn-save:hover{opacity:.9;transform:translateY(-1px)}\n  .btn-edit{background:#fff;color:var(--navy);border:2px solid var(--navy)}\n  .btn-edit:hover{background:var(--sky)}\n  .btn-cancel{background:#fff;color:#666;border:2px solid #ddd}\n  .btn-cancel:hover{background:#f5f5f5}\n  .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}\n  .changes-count{font-size:.82rem;color:#1565c0;background:#e3f2fd;padding:5px 12px;border-radius:20px;margin-left:auto}\n  .download-links{display:flex;gap:10px;flex-wrap:wrap;margin-left:auto}\n  .btn-download{background:#fff;color:#0d2366;border:2px solid #90caf9}\n  .btn-download:hover{background:#e3f2fd}\n\n  /* ── Success banner ── */\n  .success-banner{background:#e8f5e9;border:1.5px solid #81c784;color:#1b5e20;border-radius:10px;padding:13px 18px;margin-bottom:18px;display:flex;align-items:center;gap:10px;display:none}\n  .success-banner.show{display:flex}\n\n  /* ── Toast ── */\n  .toast{position:fixed;bottom:28px;right:28px;padding:14px 22px;border-radius:10px;color:#fff;font-size:.9rem;font-weight:600;z-index:9999;opacity:0;transform:translateY(20px);transition:all .35s;pointer-events:none;max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.2)}\n  .toast.show{opacity:1;transform:translateY(0)}\n  .toast.success{background:#2e7d32}\n  .toast.error{background:#c62828}\n  .toast.info{background:#0d2366}\n\n  /* ── Spinner ── */\n  .spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}\n  @keyframes spin{to{transform:rotate(360deg)}}\n\n  /* ── Loading overlay ── */\n  #loadingOverlay{position:fixed;inset:0;background:rgba(255,255,255,.85);display:flex;align-items:center;justify-content:center;z-index:9000;flex-direction:column;gap:14px}\n  #loadingOverlay .sp{width:44px;height:44px;border:5px solid #dce6f1;border-top-color:var(--navy);border-radius:50%;animation:spin 1s linear infinite}\n  #loadingOverlay p{color:var(--navy);font-weight:600}\n\n  /* ── Edit mode indicator ── */\n  .edit-mode-bar{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:10px 16px;border-radius:8px;font-size:.85rem;margin-bottom:14px;display:none;align-items:center;gap:8px}\n  .edit-mode-bar.show{display:flex}\n\n  @media(max-width:600px){\n    .topbar{flex-direction:column;align-items:flex-start}\n    .fields-grid{grid-template-columns:1fr}\n    .action-bar{justify-content:center}\n  }\n</style>\n</head>\n<body>\n\n<!-- Loading Overlay -->\n<div id="loadingOverlay">\n  <div class="sp"></div>\n  <p>Loading your proforma data…</p>\n</div>\n\n<!-- Top Bar -->\n<div class="topbar">\n  <div class="topbar-left">\n    <div class="icon">👨\u200d🏫</div>\n    <div>\n      <h1>My Proforma Data</h1>\n      <p>Chikiti Block Verification Portal · 2026</p>\n    </div>\n  </div>\n  <div class="topbar-right">\n    <div class="school-badge">🏫 {{ school }}</div>\n    <a href="/teacher/logout" class="btn-logout">🚪 Logout</a>\n  </div>\n</div>\n\n<!-- Main container -->\n<div class="container">\n\n  <!-- Progress bar -->\n  <div class="progress-wrap" id="progressWrap" style="display:none">\n    <div class="progress-label">Verification Progress</div>\n    <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>\n    <div class="progress-stats" id="progressStats"></div>\n  </div>\n\n  <!-- Teacher records inserted here -->\n  <div id="teacherRecords"></div>\n\n  <!-- No data message -->\n  <div id="noData" style="display:none;background:#fff;border-radius:14px;padding:40px;text-align:center;color:#999;font-size:1.1rem">\n    ⚠️ No records found. Please <a href="/teacher/logout">logout</a> and try again.\n  </div>\n\n</div>\n\n<!-- Toast -->\n<div class="toast" id="toast"></div>\n\n<script>\n/* ── State ── */\nlet allTeachers = [], fieldLabels = {}, fieldGroups = [];\nlet editModes = {}; // { "NAME||PROFORMA": bool }\n\n/* ── Boot ── */\nwindow.onload = async () => {\n  try {\n    const res  = await fetch(\'/api/teacher/mydata\');\n    const data = await res.json();\n    allTeachers = data.teachers || [];\n    fieldLabels = data.field_labels || {};\n    fieldGroups = data.field_groups || [];\n    renderAll();\n  } catch(e) {\n    document.getElementById(\'noData\').style.display = \'block\';\n  } finally {\n    document.getElementById(\'loadingOverlay\').style.display = \'none\';\n  }\n};\n\n/* ── Render all teachers ── */\nfunction renderAll(){\n  if(!allTeachers.length){ document.getElementById(\'noData\').style.display=\'block\'; return; }\n\n  // Progress\n  const total = allTeachers.length;\n  const done  = allTeachers.filter(t=>t.status===\'VERIFIED\'||t.status===\'UPDATED\').length;\n  if(total > 1){\n    document.getElementById(\'progressWrap\').style.display = \'block\';\n    document.getElementById(\'progressFill\').style.width = `${Math.round(done/total*100)}%`;\n    document.getElementById(\'progressStats\').innerHTML =\n      allTeachers.map(t=>`<div class="stat-item"><strong>${t.teacher_name}</strong>: \n        <span style="color:${statusColor(t.status)}">${t.status}</span></div>`).join(\'\');\n  }\n\n  const container = document.getElementById(\'teacherRecords\');\n  container.innerHTML = \'\';\n  allTeachers.forEach((t,i)=>{\n    container.insertAdjacentHTML(\'beforeend\', buildCard(t, i));\n  });\n}\n\nfunction statusColor(s){ return s===\'VERIFIED\'?\'#2e7d32\':s===\'UPDATED\'?\'#1565c0\':\'#e65100\'; }\n\n/* ── Build one teacher card ── */\nfunction buildCard(t, idx){\n  const key  = cardKey(t);\n  const isEdit = editModes[key] || false;\n  const pf   = t.proforma || \'\';\n  const ts   = t.last_updated ? ` · Last updated: ${t.last_updated}` : \'\';\n  const chCount = (t.change_history||[]).length;\n\n  let groupsHtml = \'\';\n  for(const grp of fieldGroups){\n    let fieldsHtml = \'\';\n    for(const fk of grp.fields){\n      if(fk===\'teacher_name\'||fk===\'sl_no\') continue;\n      const label = fieldLabels[fk] || fk;\n      const val   = t[fk] || \'\';\n      const isDate = fk.startsWith(\'date_\')||fk===\'dob\';\n      fieldsHtml += `\n        <div class="field-item" id="fi_${idx}_${fk}">\n          <div class="field-label">${label}</div>\n          ${isEdit ? `<input class="field-input" id="inp_${idx}_${fk}" \n            type="${isDate?\'text\':\'text\'}" value="${escHtml(val)}" \n            placeholder="${isDate?\'DD/MM/YYYY\':\'\'}"\n            oninput="markChanged(${idx},\'${fk}\')">` \n            : `<div class="field-value">${escHtml(val)||\'<span style="color:#bbb">—</span>\'}</div>`}\n        </div>`;\n    }\n    groupsHtml += `\n      <div class="field-group">\n        <div class="group-title">${grp.title}</div>\n        <div class="fields-grid">${fieldsHtml}</div>\n      </div>`;\n  }\n\n  const canDownload = [\'UPDATED\',\'VERIFIED\'].includes(t.status || \'\') || !!t.last_updated;\n  const downloadHtml = canDownload ? `\n      <div class="download-links">\n        <button class="btn btn-download" onclick="downloadTeacherFile(${idx},\'xlsx\')">📥 Download Excel</button>\n        <button class="btn btn-download" onclick="downloadTeacherFile(${idx},\'pdf\')">🧾 Download PDF</button>\n      </div>` : \'\';\n\n  // Determine action bar content based on status & edit mode\n  let actionHtml = \'\';\n  if(t.status === \'VERIFIED\' && !isEdit){\n    actionHtml = `<span style="color:#2e7d32;font-weight:600">✅ This record has been verified.</span>\n      <button class="btn btn-edit" onclick="setEdit(\'${key}\',${idx},true)">✏️ Edit &amp; Correct</button>`;\n  } else if(isEdit){\n    actionHtml = `\n      <button class="btn btn-save" id="saveBtn_${idx}" onclick="saveUpdates(${idx})" disabled>\n        💾 Save Changes\n      </button>\n      <button class="btn btn-verify" onclick="verifyRecord(${idx})">✅ Verify as Correct</button>\n      <button class="btn btn-cancel" onclick="setEdit(\'${key}\',${idx},false)">✖ Cancel</button>\n      <span class="changes-count" id="chgCount_${idx}" style="display:none">0 changes</span>`;\n  } else {\n    actionHtml = `\n      <button class="btn btn-verify" onclick="verifyRecord(${idx})">✅ All data is correct — Verify</button>\n      <button class="btn btn-edit" onclick="setEdit(\'${key}\',${idx},true)">✏️ Edit / Correct Data</button>`;\n  }\n\n  const changesBadge = chCount>0 ? `<span style="font-size:.78rem;background:rgba(255,255,255,.2);padding:3px 10px;border-radius:12px;margin-left:8px">${chCount} edit(s)</span>` : \'\';\n\n  return `\n    <div class="teacher-card" id="card_${idx}">\n      <div class="teacher-card-header">\n        <div>\n          <div class="teacher-name">👤 ${escHtml(t.teacher_name)} ${changesBadge}</div>\n          <div class="teacher-meta">${pf} &nbsp;·&nbsp; S.No. ${t.sl_no||\'—\'}${ts}</div>\n        </div>\n        <div class="status-badge badge-${t.status||\'PENDING\'}">${t.status||\'PENDING\'}</div>\n      </div>\n      ${isEdit?`<div class="edit-mode-bar show">✏️ Edit mode active — modify the fields below then click <strong>Save Changes</strong> or <strong>Verify</strong>.</div>`:\'\'}\n      <div class="teacher-body" id="body_${idx}">${groupsHtml}</div>\n      <div class="action-bar">${actionHtml}${downloadHtml}</div>\n    </div>`;\n}\n\nfunction cardKey(t){ return t.teacher_name+\'||\'+t.proforma; }\n\n/* ── Edit mode toggle ── */\nfunction setEdit(key, idx, on){\n  editModes[key] = on;\n  // Re-render card in place\n  const card   = document.getElementById(`card_${idx}`);\n  const t      = allTeachers[idx];\n  card.outerHTML = buildCard(t, idx);\n}\n\n/* ── Track changes ── */\nfunction markChanged(idx, fk){\n  const t   = allTeachers[idx];\n  const inp = document.getElementById(`inp_${idx}_${fk}`);\n  const fi  = document.getElementById(`fi_${idx}_${fk}`);\n  if(!inp||!fi) return;\n  const changed = inp.value.trim() !== (t[fk]||\'\').trim();\n  fi.classList.toggle(\'changed\', changed);\n  updateChangeCount(idx);\n}\n\nfunction updateChangeCount(idx){\n  const t  = allTeachers[idx];\n  let cnt  = 0;\n  for(const fk of Object.keys(fieldLabels)){\n    const inp = document.getElementById(`inp_${idx}_${fk}`);\n    if(inp && inp.value.trim() !== (t[fk]||\'\').trim()) cnt++;\n  }\n  const cc = document.getElementById(`chgCount_${idx}`);\n  const sb = document.getElementById(`saveBtn_${idx}`);\n  if(cc){ cc.textContent=`${cnt} change(s)`; cc.style.display=cnt?\'inline-block\':\'none\'; }\n  if(sb) sb.disabled = (cnt===0);\n}\n\n/* ── Collect edits ── */\nfunction collectEdits(idx){\n  const t = allTeachers[idx];\n  const updated = {};\n  for(const fk of Object.keys(fieldLabels)){\n    const inp = document.getElementById(`inp_${idx}_${fk}`);\n    if(inp && inp.value.trim() !== (t[fk]||\'\').trim()){\n      updated[fk] = inp.value.trim();\n    }\n  }\n  return updated;\n}\n\n/* ── Save updates ── */\nasync function saveUpdates(idx){\n  const t       = allTeachers[idx];\n  const fields  = collectEdits(idx);\n  if(!Object.keys(fields).length){ showToast(\'No changes to save.\',\'info\'); return; }\n\n  const sb = document.getElementById(`saveBtn_${idx}`);\n  if(sb){ sb.disabled=true; sb.innerHTML=\'<div class="spinner"></div> Saving…\'; }\n\n  try{\n    const res  = await fetch(\'/api/teacher/update\',{\n      method:\'POST\',\n      headers:{\'Content-Type\':\'application/json\'},\n      body: JSON.stringify({teacher_name:t.teacher_name, proforma:t.proforma, updates: fields})\n    });\n    const data = await res.json();\n    if(data.success){\n      Object.assign(t, fields);\n      t.status = data.status || \'UPDATED\';\n      t.last_updated = data.timestamp || \'\';\n      editModes[cardKey(t)] = false;\n      const card = document.getElementById(`card_${idx}`);\n      card.outerHTML = buildCard(t, idx);\n      showToast(\'✅ \'+(data.message||\'Changes saved.\'), \'success\');\n      return true;\n    } else {\n      showToast(\'❌ \'+(data.error||\'Update failed.\'), \'error\');\n      if(sb){ sb.disabled=false; sb.innerHTML=\'💾 Save Changes\'; }\n      return false;\n    }\n  } catch(e){\n    showToast(\'❌ Network error. Please retry.\', \'error\');\n    if(sb){ sb.disabled=false; sb.innerHTML=\'💾 Save Changes\'; }\n    return false;\n  }\n}\n\n/* ── Verify record ── */\nasync function verifyRecord(idx){\n  const t = allTeachers[idx];\n  // Collect any pending edits first\n  const fields = collectEdits(idx);\n  if(Object.keys(fields).length){\n    const saved = await saveUpdates(idx);\n    if(!saved) return;\n  }\n\n  const vbtn = document.querySelector(`#card_${idx} .btn-verify`);\n  if(vbtn){ vbtn.disabled=true; vbtn.innerHTML=\'<div class="spinner"></div> Verifying…\'; }\n\n  try{\n    const res  = await fetch(\'/api/teacher/verify\',{\n      method:\'POST\',\n      headers:{\'Content-Type\':\'application/json\'},\n      body: JSON.stringify({teacher_name:t.teacher_name, proforma:t.proforma})\n    });\n    const data = await res.json();\n    if(data.success){\n      t.status = data.status || \'VERIFIED\';\n      t.last_updated = data.timestamp || \'\';\n      editModes[cardKey(t)] = false;\n      const card = document.getElementById(`card_${idx}`);\n      card.outerHTML = buildCard(t, idx);\n      showToast(\'✅ \'+(data.message||\'Record verified.\'), \'success\');\n    } else {\n      showToast(\'❌ \'+(data.error||\'Verification failed.\'), \'error\');\n    }\n  } catch(e){\n    showToast(\'❌ Network error. Please retry.\', \'error\');\n  }\n}\n\n/* ── Teacher downloads ── */\nfunction downloadTeacherFile(idx, format){\n  const t = allTeachers[idx];\n  const url = `/api/teacher/download?format=${encodeURIComponent(format)}&teacher_name=${encodeURIComponent(t.teacher_name)}&proforma=${encodeURIComponent(t.proforma)}`;\n  window.open(url, \'_blank\');\n}\n\n/* ── Toast ── */\nlet toastTimer;\nfunction showToast(msg, type=\'success\'){\n  const el = document.getElementById(\'toast\');\n  el.textContent = msg;\n  el.className = `toast ${type} show`;\n  clearTimeout(toastTimer);\n  toastTimer = setTimeout(()=>{ el.className=\'toast\'; }, 4500);\n}\n\n/* ── Escape HTML ── */\nfunction escHtml(s){\n  if(s==null) return \'\';\n  return String(s).replace(/&/g,\'&amp;\').replace(/</g,\'&lt;\').replace(/>/g,\'&gt;\').replace(/"/g,\'&quot;\');\n}\n</script>\n</body>\n</html>\n'
 
 ADMIN_LOGIN_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n<title>Admin Login — Chikiti Block</title>\n<style>\n  :root{--navy:#0d2366;--steel:#1f4e79;--red:#c62828}\n  *{box-sizing:border-box;margin:0;padding:0}\n  body{font-family:\'Segoe UI\',Arial,sans-serif;background:linear-gradient(135deg,#1a1a3e 0%,#0d2366 50%,#1f4e79 100%);min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}\n  .back-link{position:fixed;top:16px;left:16px;color:rgba(255,255,255,.8);text-decoration:none;font-size:.88rem;font-weight:600;background:rgba(255,255,255,.12);padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.2)}\n  .back-link:hover{background:rgba(255,255,255,.2)}\n  .card{background:#fff;border-radius:18px;box-shadow:0 16px 60px rgba(0,0,0,.35);padding:44px 40px 40px;max-width:440px;width:100%}\n  .logo{text-align:center;margin-bottom:28px}\n  .logo .icon{font-size:3rem;margin-bottom:10px}\n  .logo h1{font-size:1.45rem;color:var(--navy);font-weight:700}\n  .logo p{font-size:.84rem;color:#666;margin-top:4px}\n  .badge{display:inline-block;background:#0d2366;color:#fff;font-size:.7rem;padding:3px 10px;border-radius:12px;margin-top:6px;letter-spacing:.5px}\n  .field{margin-bottom:18px}\n  label{display:block;font-size:.87rem;font-weight:600;color:var(--steel);margin-bottom:6px}\n  input[type=text],input[type=password]{\n    width:100%;padding:11px 14px;border:2px solid #d0daf0;border-radius:9px;\n    font-size:.95rem;color:#222;outline:none;transition:border-color .2s;background:#fdfdff}\n  input:focus{border-color:var(--navy)}\n  .pw-wrap{position:relative}\n  .pw-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:1.1rem;user-select:none}\n  .btn-login{width:100%;padding:13px;background:linear-gradient(135deg,#1a1a3e,var(--navy));color:#fff;border:none;border-radius:10px;font-size:1rem;font-weight:700;cursor:pointer;transition:opacity .2s;margin-top:6px}\n  .btn-login:hover{opacity:.88}\n  .btn-login:disabled{opacity:.6;cursor:not-allowed}\n  .alert{padding:11px 15px;border-radius:8px;font-size:.87rem;margin-bottom:14px;display:none}\n  .alert.error{background:#ffeaea;color:var(--red);border:1px solid #ffcdd2;display:block}\n  .spinner{display:none;width:18px;height:18px;border:3px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin:auto}\n  @keyframes spin{to{transform:rotate(360deg)}}\n  .secure-note{text-align:center;margin-top:18px;font-size:.77rem;color:#999}\n</style>\n</head>\n<body>\n\n<a class="back-link" href="/">← Home</a>\n\n<div class="card">\n  <div class="logo">\n    <div class="icon">🛡️</div>\n    <h1>Admin Login</h1>\n    <p>Teacher Verification System</p>\n    <span class="badge">ADMINISTRATOR ACCESS</span>\n  </div>\n\n  <div class="alert error" id="alertBox" style="display:none"></div>\n\n  <div class="field">\n    <label for="username">👤 Username</label>\n    <input type="text" id="username" placeholder="Enter admin username" autocomplete="username">\n  </div>\n\n  <div class="field">\n    <label for="password">🔑 Password</label>\n    <div class="pw-wrap">\n      <input type="password" id="password" placeholder="Enter password" autocomplete="current-password">\n      <span class="pw-toggle" onclick="togglePw()">👁</span>\n    </div>\n  </div>\n\n  <button class="btn-login" id="loginBtn" onclick="doLogin()">\n    <span id="btnText">Login to Admin Panel →</span>\n    <div class="spinner" id="spinner"></div>\n  </button>\n\n  <p class="secure-note">🔒 Access restricted to authorised administrators only</p>\n</div>\n\n<script>\nfunction togglePw(){\n  const pw = document.getElementById(\'password\');\n  pw.type = pw.type===\'password\' ? \'text\' : \'password\';\n}\n\nasync function doLogin(){\n  const username = document.getElementById(\'username\').value.trim();\n  const password = document.getElementById(\'password\').value.trim();\n  const alertBox = document.getElementById(\'alertBox\');\n  alertBox.style.display = \'none\';\n\n  if(!username || !password){ showErr(\'Please enter username and password.\'); return; }\n\n  setBusy(true);\n  try{\n    const res  = await fetch(\'/admin/login\',{\n      method:\'POST\',\n      headers:{\'Content-Type\':\'application/json\'},\n      body: JSON.stringify({username, password})\n    });\n    const data = await res.json();\n    if(data.success){\n      window.location.href = \'/admin/dashboard\';\n    } else {\n      showErr(data.error || \'Invalid credentials.\');\n    }\n  } catch(e){ showErr(\'Network error. Please try again.\'); }\n  finally{ setBusy(false); }\n}\n\nfunction showErr(msg){\n  const a = document.getElementById(\'alertBox\');\n  a.textContent = msg; a.style.display=\'block\';\n}\nfunction setBusy(on){\n  document.getElementById(\'loginBtn\').disabled = on;\n  document.getElementById(\'btnText\').style.display = on?\'none\':\'inline\';\n  document.getElementById(\'spinner\').style.display = on?\'block\':\'none\';\n}\ndocument.addEventListener(\'keydown\', e=>{ if(e.key===\'Enter\') doLogin(); });\n</script>\n</body>\n</html>\n'
 
@@ -1229,27 +1233,82 @@ FIELD_GROUPS = [{'title': '🏫 School & Location', 'fields': ['district', 'scho
 
 PROTECTED_FIELDS = {'sl_no','teacher_name','proforma','status','last_updated','updated_by','change_history'}
 
+PROFORMA_MAIN_HEADINGS = {
+    'PROFORMA I': 'PROFORMA I — Chikiti Block Teacher Verification Register',
+    'PROFORMA II': 'PROFORMA II — Chikiti Block Teacher Verification Register',
+    'PROFORMA III': 'PROFORMA III — Chikiti Block Teacher Verification Register',
+    'PROFORMA IV': 'PROFORMA IV — Chikiti Block Teacher Verification Register',
+    'PROFORMA V': 'PROFORMA V — Chikiti Block Teacher Verification Register',
+    'PROFORMA VI': 'PROFORMA VI — Chikiti Block Teacher Verification Register',
+    'PROFORMA VII': 'PROFORMA VII — Chikiti Block Teacher Verification Register',
+    'PROFORMA VIII': 'PROFORMA VIII — LIST OF LEVEL-III ELEMENTARY CADRE TEACHERS FOR PROMOTION',
+}
+
 # ══ Backend ══
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DATA_PATH = os.path.join(DATA_DIR, "teachers.json")
 SCHOOLS_PATH = os.path.join(DATA_DIR, "schools.json")
 LOG_PATH = os.path.join(DATA_DIR, "activity_log.json")
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+
+
+def _json_dump(path, payload):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def _create_backup(path):
+    if not os.path.exists(path) or os.path.getsize(path) <= 0:
+        return
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"{os.path.splitext(os.path.basename(path))[0]}_{stamp}.json"
+    backup_path = os.path.join(BACKUP_DIR, backup_name)
+    try:
+        shutil.copy2(path, backup_path)
+    except Exception:
+        return
+    base = os.path.splitext(os.path.basename(path))[0] + "_"
+    backups = sorted(
+        [os.path.join(BACKUP_DIR, p) for p in os.listdir(BACKUP_DIR) if p.startswith(base)],
+        reverse=True
+    )
+    for old in backups[15:]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+
+
+def _atomic_write_json(path, payload, backup=True):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if backup:
+        _create_backup(path)
+    fd, tmp_path = tempfile.mkstemp(prefix="tmp_", suffix=".json", dir=os.path.dirname(path))
+    os.close(fd)
+    try:
+        _json_dump(tmp_path, payload)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def ensure_data_files():
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(DATA_PATH) or os.path.getsize(DATA_PATH) < 10:
-        with open(DATA_PATH, "w") as f:
-            json.dump(SEED_DATA, f, indent=2)
+        _atomic_write_json(DATA_PATH, SEED_DATA, backup=False)
     if not os.path.exists(SCHOOLS_PATH):
         schools = sorted(set(t["school"] for t in SEED_DATA if t.get("school")))
-        with open(SCHOOLS_PATH, "w") as f:
-            json.dump(schools, f, indent=2)
+        _atomic_write_json(SCHOOLS_PATH, schools, backup=False)
     if not os.path.exists(LOG_PATH):
-        with open(LOG_PATH, "w") as f:
-            json.dump([], f)
+        _atomic_write_json(LOG_PATH, [], backup=False)
 
 
 ensure_data_files()
@@ -1257,22 +1316,20 @@ ensure_data_files()
 
 def load_teachers():
     try:
-        with open(DATA_PATH) as f:
+        with open(DATA_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return list(SEED_DATA)
 
 
 def save_teachers(teachers):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(DATA_PATH, "w") as f:
-        json.dump(teachers, f, indent=2)
+    _atomic_write_json(DATA_PATH, teachers, backup=True)
 
 
 def load_schools():
     schools = set()
     try:
-        with open(SCHOOLS_PATH) as f:
+        with open(SCHOOLS_PATH, encoding="utf-8") as f:
             for s in json.load(f):
                 if s:
                     schools.add(s.strip())
@@ -1285,9 +1342,8 @@ def load_schools():
 
 
 def save_schools(schools):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SCHOOLS_PATH, "w") as f:
-        json.dump(sorted(set(s.strip() for s in schools if s.strip())), f, indent=2)
+    cleaned = sorted(set(s.strip() for s in schools if s and s.strip()))
+    _atomic_write_json(SCHOOLS_PATH, cleaned, backup=True)
 
 
 def get_schools():
@@ -1425,21 +1481,20 @@ def log_activity(action, details=None):
     try:
         logs = []
         if os.path.exists(LOG_PATH):
-            with open(LOG_PATH) as f:
+            with open(LOG_PATH, encoding="utf-8") as f:
                 logs = json.load(f)
         entry = {"time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"), "action": action}
         if details:
             entry["details"] = details
         logs.insert(0, entry)
-        with open(LOG_PATH, "w") as f:
-            json.dump(logs[:500], f, indent=2)
+        _atomic_write_json(LOG_PATH, logs[:500], backup=True)
     except Exception:
         pass
 
 
 def get_logs(limit=100):
     try:
-        with open(LOG_PATH) as f:
+        with open(LOG_PATH, encoding="utf-8") as f:
             return json.load(f)[:limit]
     except Exception:
         return []
@@ -1522,37 +1577,51 @@ def api_teacher_mydata():
                     "field_labels": FIELD_LABELS, "field_groups": FIELD_GROUPS})
 
 
+
 @app.route("/api/teacher/update", methods=["POST"])
 @teacher_required
 def api_teacher_update():
     data = request.get_json(silent=True) or {}
     teacher_name = data.get("teacher_name", "").strip()
     proforma     = data.get("proforma", "").strip()
-    updates      = data.get("updates", {})
+    updates      = data.get("updates") or data.get("fields") or {}
     if not teacher_name or not proforma:
         return jsonify({"success": False, "error": "teacher_name and proforma required"})
     teachers = load_teachers()
+    school = session.get("teacher_school")
+    dob    = session.get("teacher_dob")
     for t in teachers:
-        if t.get("teacher_name") == teacher_name and t.get("proforma") == proforma:
+        if t.get("teacher_name") == teacher_name and t.get("proforma") == proforma and t.get("school") == school and dob_matches(t.get("dob", ""), dob):
             history = t.get("change_history", [])
             changed_fields = []
             for k, v in updates.items():
                 if k in PROTECTED_FIELDS:
                     continue
-                if t.get(k) != v:
-                    history.append({"field": k, "old": t.get(k, ""), "new": v,
+                new_val = "" if v is None else str(v).strip()
+                old_val = "" if t.get(k) is None else str(t.get(k)).strip()
+                if old_val != new_val:
+                    history.append({"field": k, "old": t.get(k, ""), "new": new_val,
                                     "time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
                                     "by": "teacher"})
                     changed_fields.append(k)
-                    t[k] = v
+                    t[k] = new_val
             t["change_history"] = history
+            timestamp = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
             if changed_fields:
                 t["status"]       = "UPDATED"
-                t["last_updated"] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+                t["last_updated"] = timestamp
                 t["updated_by"]   = "teacher"
-                log_activity(f"Teacher update: {teacher_name}")
+                save_teachers(teachers)
+                log_activity(f"Teacher update: {teacher_name}", {"proforma": proforma, "fields": changed_fields})
+                return jsonify({
+                    "success": True,
+                    "message": f"Changes saved safely in backend ({len(changed_fields)} field(s)).",
+                    "timestamp": timestamp,
+                    "status": t["status"],
+                    "changed_fields": changed_fields,
+                })
             save_teachers(teachers)
-            return jsonify({"success": True})
+            return jsonify({"success": True, "message": "No changes detected.", "timestamp": t.get("last_updated", ""), "status": t.get("status", "PENDING")})
     return jsonify({"success": False, "error": "Teacher record not found"})
 
 
@@ -1562,16 +1631,136 @@ def api_teacher_verify():
     data = request.get_json(silent=True) or {}
     teacher_name = data.get("teacher_name", "").strip()
     proforma     = data.get("proforma", "").strip()
+    school = session.get("teacher_school")
+    dob    = session.get("teacher_dob")
     teachers = load_teachers()
     for t in teachers:
-        if t.get("teacher_name") == teacher_name and t.get("proforma") == proforma:
+        if t.get("teacher_name") == teacher_name and t.get("proforma") == proforma and t.get("school") == school and dob_matches(t.get("dob", ""), dob):
+            timestamp = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
             t["status"]       = "VERIFIED"
-            t["last_updated"] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+            t["last_updated"] = timestamp
             t["updated_by"]   = "teacher-verify"
             save_teachers(teachers)
-            log_activity(f"Teacher verified: {teacher_name}")
-            return jsonify({"success": True})
+            log_activity(f"Teacher verified: {teacher_name}", {"proforma": proforma})
+            return jsonify({"success": True, "message": "Record verified successfully.", "timestamp": timestamp, "status": t["status"]})
     return jsonify({"success": False, "error": "Record not found"})
+
+
+def _teacher_session_record(teacher_name, proforma):
+    school = session.get("teacher_school")
+    dob = session.get("teacher_dob")
+    teachers = load_teachers()
+    for teacher in teachers:
+        if teacher.get("teacher_name") == teacher_name and teacher.get("proforma") == proforma and teacher.get("school") == school and dob_matches(teacher.get("dob", ""), dob):
+            return teacher
+    return None
+
+
+def _build_teacher_pdf(teacher):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleCustom', parent=styles['Title'], fontName='Helvetica-Bold', fontSize=15, textColor=colors.HexColor('#0D2366'), alignment=1, spaceAfter=10)
+    meta_style = ParagraphStyle('MetaCustom', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=12, textColor=colors.HexColor('#444444'))
+    section_style = ParagraphStyle('SectionCustom', parent=styles['Heading3'], fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor('#1F4E79'), spaceBefore=8, spaceAfter=6)
+    body_style = ParagraphStyle('BodyCustom', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=12)
+
+    story = []
+    proforma = teacher.get('proforma', 'PROFORMA')
+    heading = PROFORMA_MAIN_HEADINGS.get(proforma, f'{proforma} — Chikiti Block Teacher Verification Register')
+    story.append(Paragraph(heading, title_style))
+    story.append(Paragraph(f"Teacher: <b>{teacher.get('teacher_name', '—')}</b> &nbsp;&nbsp; | &nbsp;&nbsp; School: <b>{teacher.get('school', '—')}</b>", meta_style))
+    story.append(Paragraph(f"Status: <b>{teacher.get('status', 'PENDING')}</b> &nbsp;&nbsp; | &nbsp;&nbsp; Last Updated: <b>{teacher.get('last_updated', '—') or '—'}</b>", meta_style))
+    story.append(Paragraph(f"Generated: <b>{datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</b>", meta_style))
+    story.append(Spacer(1, 10))
+
+    overview = [
+        [Paragraph('<b>Field</b>', body_style), Paragraph('<b>Value</b>', body_style)],
+        [Paragraph('Proforma', body_style), Paragraph(str(proforma), body_style)],
+        [Paragraph('S.No.', body_style), Paragraph(str(teacher.get('sl_no', '') or '—'), body_style)],
+        [Paragraph('District / Block', body_style), Paragraph(str(teacher.get('district', '') or '—'), body_style)],
+        [Paragraph('Date of Birth', body_style), Paragraph(str(teacher.get('dob', '') or '—'), body_style)],
+    ]
+    overview_table = Table(overview, colWidths=[150, 360])
+    overview_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0D2366')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#C9D2E3')),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor('#F8FBFF')]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    story.append(overview_table)
+
+    for group in FIELD_GROUPS:
+        rows = [[Paragraph('<b>Field</b>', body_style), Paragraph('<b>Value</b>', body_style)]]
+        for fk in group.get('fields', []):
+            if fk in {'teacher_name', 'sl_no'}:
+                continue
+            label = FIELD_LABELS.get(fk, fk)
+            value = str(teacher.get(fk, '') or '—').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\\n', '<br/>')
+            rows.append([Paragraph(str(label), body_style), Paragraph(value, body_style)])
+        if len(rows) > 1:
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(group.get('title', 'Details'), section_style))
+            table = Table(rows, colWidths=[180, 330], repeatRows=1)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1F4E79')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#C9D2E3')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F7FAFF')]),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ]))
+            story.append(table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+@app.route("/api/teacher/download")
+@teacher_required
+def api_teacher_download():
+    teacher_name = (request.args.get("teacher_name") or "").strip()
+    proforma = (request.args.get("proforma") or "").strip()
+    export_format = (request.args.get("format") or "xlsx").strip().lower()
+    if not teacher_name or not proforma:
+        return jsonify({"success": False, "error": "teacher_name and proforma required"}), 400
+    teacher = _teacher_session_record(teacher_name, proforma)
+    if not teacher:
+        return jsonify({"success": False, "error": "Record not found"}), 404
+
+    safe_name = re.sub(r'[^A-Za-z0-9]+', '_', teacher_name).strip('_') or 'teacher'
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
+
+    if export_format == 'pdf':
+        pdf_buffer = _build_teacher_pdf(teacher)
+        log_activity(f"Teacher download PDF: {teacher_name}", {"proforma": proforma})
+        return send_file(pdf_buffer, as_attachment=True,
+                         download_name=f"{safe_name}_{proforma.replace(' ', '_')}_{stamp}.pdf",
+                         mimetype="application/pdf")
+
+    wb = _build_export_excel([teacher], include_summary=False)
+    excel_buffer = io.BytesIO()
+    wb.save(excel_buffer)
+    excel_buffer.seek(0)
+    log_activity(f"Teacher download Excel: {teacher_name}", {"proforma": proforma})
+    return send_file(excel_buffer, as_attachment=True,
+                     download_name=f"{safe_name}_{proforma.replace(' ', '_')}_{stamp}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ══ Admin Routes ══
@@ -2028,74 +2217,113 @@ def api_admin_export():
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-def _build_export_excel(teachers):
+
+def _build_export_excel(teachers, include_summary=True):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     PROFORMA_COLORS = {
-        "PROFORMA I": "D9E8FF", "PROFORMA II": "D9F0D9", "PROFORMA III": "FFF4CC",
-        "PROFORMA IV": "FFE4CC", "PROFORMA V": "F0D9FF", "PROFORMA VI": "FFD9E8",
-        "PROFORMA VII": "D9FFFC", "PROFORMA VIII": "F8E1FF",
+        "PROFORMA I": "2F75B5", "PROFORMA II": "70AD47", "PROFORMA III": "BF9000",
+        "PROFORMA IV": "C55A11", "PROFORMA V": "7030A0", "PROFORMA VI": "C0007A",
+        "PROFORMA VII": "008B8B", "PROFORMA VIII": "9E4FB5",
     }
-    STATUS_COLORS = {"VERIFIED": "C6EFCE", "UPDATED": "DDEBF7", "PENDING": "FFEB9C"}
+    STATUS_COLORS = {"VERIFIED": "E2F0D9", "UPDATED": "DDEBF7", "PENDING": "FFF2CC"}
     COLUMNS = list(FIELD_LABELS.keys())
-    HEADERS  = [FIELD_LABELS[c] for c in COLUMNS]
-    header_font  = Font(bold=True, color="FFFFFF", size=10)
-    header_fill  = PatternFill("solid", fgColor="0D2366")
+    HEADERS = [FIELD_LABELS[c] for c in COLUMNS]
     center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    left_align   = Alignment(horizontal="left",   vertical="center", wrap_text=True)
-    thin  = Side(style="thin", color="CCCCCC")
-    bdr   = Border(left=thin, right=thin, top=thin, bottom=thin)
+    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    thin = Side(style="thin", color="D0D7E5")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
     by_proforma = {}
-    for t in teachers:
-        pf = t.get("proforma", "OTHER")
-        by_proforma.setdefault(pf, []).append(t)
+    for teacher in teachers:
+        pf = teacher.get("proforma", "OTHER")
+        by_proforma.setdefault(pf, []).append(teacher)
+
+    if include_summary:
+        ws_sum = wb.create_sheet(title="Summary", index=0)
+        ws_sum.sheet_view.showGridLines = False
+        ws_sum["A1"] = "Chikiti Block — Teacher Verification Summary"
+        ws_sum["A1"].font = Font(bold=True, size=14, color="0D2366")
+        ws_sum["A2"] = f"Generated: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        ws_sum["A2"].font = Font(size=9, color="666666")
+        ws_sum.merge_cells("A1:F1")
+        ws_sum.merge_cells("A2:F2")
+        for ci, header in enumerate(["Proforma", "Total", "Verified", "Updated", "Pending", "% Done"], 1):
+            cell = ws_sum.cell(row=4, column=ci, value=header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="0D2366")
+            cell.alignment = center_align
+            cell.border = border
+        total_all = verified_all = updated_all = pending_all = 0
+        for ri, (pf, rows) in enumerate(sorted(by_proforma.items()), 5):
+            verified = sum(1 for t in rows if t.get("status") == "VERIFIED")
+            updated = sum(1 for t in rows if t.get("status") == "UPDATED")
+            pending = len(rows) - verified - updated
+            pct = f"{round((verified + updated) / len(rows) * 100)}%" if rows else "0%"
+            for ci, val in enumerate([pf, len(rows), verified, updated, pending, pct], 1):
+                cell = ws_sum.cell(row=ri, column=ci, value=val)
+                cell.alignment = center_align
+                cell.border = border
+                cell.font = Font(size=9)
+            total_all += len(rows)
+            verified_all += verified
+            updated_all += updated
+            pending_all += pending
+        last_row = 5 + len(by_proforma)
+        pct_all = f"{round((verified_all + updated_all) / total_all * 100)}%" if total_all else "0%"
+        for ci, val in enumerate(["TOTAL", total_all, verified_all, updated_all, pending_all, pct_all], 1):
+            cell = ws_sum.cell(row=last_row, column=ci, value=val)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="DDEBF7")
+            cell.alignment = center_align
+            cell.border = border
+        for ci, width in enumerate([34, 10, 10, 10, 10, 10], 1):
+            ws_sum.column_dimensions[get_column_letter(ci)].width = width
+
     for pf, rows in sorted(by_proforma.items()):
         ws = wb.create_sheet(title=pf[:31])
-        ws.freeze_panes = "B2"
         ws.sheet_view.showGridLines = False
-        for ci, h in enumerate(HEADERS, 1):
-            c = ws.cell(row=1, column=ci, value=h)
-            c.font=header_font; c.fill=header_fill; c.alignment=center_align; c.border=bdr
-        ws.row_dimensions[1].height = 32
-        for ri, t in enumerate(rows, 2):
-            st = t.get("status", "PENDING")
-            rc = STATUS_COLORS.get(st, "FFFFFF")
+        ws.freeze_panes = "B3"
+        total_cols = len(COLUMNS)
+        heading = PROFORMA_MAIN_HEADINGS.get(pf, f"{pf} — Chikiti Block Teacher Verification Register")
+        title_color = PROFORMA_COLORS.get(pf, "1F4E79")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+        title_cell = ws.cell(row=1, column=1, value=heading)
+        title_cell.font = Font(bold=True, size=13, color="FFFFFF")
+        title_cell.fill = PatternFill("solid", fgColor=title_color)
+        title_cell.alignment = center_align
+        title_cell.border = border
+        ws.row_dimensions[1].height = 24
+
+        for ci, header in enumerate(HEADERS, 1):
+            cell = ws.cell(row=2, column=ci, value=header)
+            cell.font = Font(bold=True, color="FFFFFF", size=10)
+            cell.fill = PatternFill("solid", fgColor="0D2366")
+            cell.alignment = center_align
+            cell.border = border
+        ws.row_dimensions[2].height = 32
+
+        for ri, teacher in enumerate(rows, 3):
+            status = teacher.get("status", "PENDING")
+            fill_color = STATUS_COLORS.get(status, "FFFFFF")
             for ci, col in enumerate(COLUMNS, 1):
-                c = ws.cell(row=ri, column=ci, value=str(t.get(col, "")))
-                c.fill=PatternFill("solid", fgColor=rc); c.alignment=left_align
-                c.border=bdr; c.font=Font(size=9)
-            ws.row_dimensions[ri].height = 18
+                value = teacher.get(col, "")
+                cell = ws.cell(row=ri, column=ci, value=str(value) if value is not None else "")
+                cell.fill = PatternFill("solid", fgColor=fill_color)
+                cell.alignment = left_align
+                cell.border = border
+                cell.font = Font(size=9)
+            ws.row_dimensions[ri].height = 20
+
+        if rows:
+            ws.auto_filter.ref = f"A2:{get_column_letter(total_cols)}{len(rows) + 2}"
         for ci, col in enumerate(COLUMNS, 1):
-            ml = max(len(HEADERS[ci-1]), max((len(str(t.get(col,""))) for t in rows), default=0))
-            ws.column_dimensions[get_column_letter(ci)].width = min(ml+4, 40)
-    ws_sum = wb.create_sheet(title="Summary", index=0)
-    ws_sum.sheet_view.showGridLines = False
-    ws_sum["A1"] = "Chikiti Block — Teacher Verification Summary"
-    ws_sum["A1"].font = Font(bold=True, size=14, color="0D2366")
-    ws_sum["A2"] = f"Generated: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}"
-    ws_sum["A2"].font = Font(size=9, color="888888")
-    ws_sum.merge_cells("A1:F1"); ws_sum.merge_cells("A2:F2")
-    ca = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    for ci, h in enumerate(["Proforma","Total","Verified","Updated","Pending","% Done"], 1):
-        c = ws_sum.cell(row=4, column=ci, value=h)
-        c.font=Font(bold=True, color="FFFFFF"); c.fill=PatternFill("solid", fgColor="0D2366")
-        c.alignment=ca
-    ta=va=ua=pa=0
-    for ri, (pf, rows) in enumerate(sorted(by_proforma.items()), 5):
-        v=sum(1 for t in rows if t.get("status")=="VERIFIED")
-        u=sum(1 for t in rows if t.get("status")=="UPDATED")
-        p=len(rows)-v-u
-        pct=f"{round((v+u)/len(rows)*100)}%" if rows else "0%"
-        for ci, val in enumerate([pf,len(rows),v,u,p,pct], 1):
-            c=ws_sum.cell(row=ri, column=ci, value=val); c.alignment=ca; c.border=bdr; c.font=Font(size=9)
-        ta+=len(rows); va+=v; ua+=u; pa+=p
-    lr = 5 + len(by_proforma)
-    pct_all = f"{round((va+ua)/ta*100)}%" if ta else "0%"
-    for ci, val in enumerate(["TOTAL",ta,va,ua,pa,pct_all], 1):
-        c=ws_sum.cell(row=lr, column=ci, value=val)
-        c.font=Font(bold=True); c.fill=PatternFill("solid", fgColor="DDEBF7"); c.alignment=ca; c.border=bdr
-    for ci, w in enumerate([30,8,10,10,10,8], 1):
-        ws_sum.column_dimensions[get_column_letter(ci)].width = w
+            max_len = max(
+                len(str(HEADERS[ci - 1])),
+                len(str(heading)) if ci == 1 else 0,
+                max((len(str(t.get(col, "") or "")) for t in rows), default=0)
+            )
+            ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 4, 42)
     return wb
 
 
